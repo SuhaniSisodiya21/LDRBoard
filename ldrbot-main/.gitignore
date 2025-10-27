@@ -1,0 +1,14 @@
+*
+
+!docs
+!docs/**
+!src
+!src/**
+!tessdata
+!tessdata/**
+!.drone.yml
+!.gitignore
+!Dockerfile
+!LICENSE
+!pom.xml
+!README.md

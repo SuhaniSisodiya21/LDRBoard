@@ -1,0 +1,119 @@
+---
+kind: pipeline
+type: kubernetes
+name: default
+
+steps:
+  - name: set-version-release
+    image: maven:3.9.9-eclipse-temurin-17
+    commands:
+      - mvn versions:set -DnewVersion=${CI_BUILD_TARGET} -DgenerateBackupPoms=false
+    volumes:
+      - name: m2-cache
+        path: /root/.m2/repository
+    when:
+      branch:
+        - main
+      event:
+        - promote
+
+  - name: prepare-tesseract
+    image: franky1/tesseract:5.5.0
+    commands:
+      - cp --parents /usr/local/lib/libtesseract.so* /tesseract-dist/
+      - ldd /usr/local/bin/tesseract | awk '{print $3}' | grep -E '^/' | xargs -I{} cp --parents {} /tesseract-dist/
+      - ldd /usr/local/lib/libtesseract.so | awk '{print $3}' | grep -E '^/' | xargs -I{} cp --parents {} /tesseract-dist/
+    volumes:
+      - name: tesseract-dist
+        path: /tesseract-dist
+
+  - name: build
+    image: maven:3.9.6-eclipse-temurin-21
+    commands:
+      - ln -sfn /usr/lib /lib
+      - apt-get update && apt-get install -y rsync
+      - rsync -a --ignore-existing /tesseract-dist/lib/ /usr/lib/
+      - rsync -a --ignore-existing /tesseract-dist/usr/ /usr/
+      - mvn package -Dtesseract.data-path=/drone/src/tessdata -Dtesseract.lib-path=/usr/local/lib
+    volumes:
+      - name: m2-cache
+        path: /root/.m2/repository
+      - name: tesseract-dist
+        path: /tesseract-dist
+
+  - name: bake-beta
+    image: plugins/docker
+    settings:
+      username:
+        from_secret: dockerhub_user
+      password:
+        from_secret: dockerhub_pass
+      repo: rubasace/ldrbot
+      tags: beta
+    when:
+      branch:
+        - main
+      event:
+        - push
+
+  - name: bake-release
+    image: plugins/docker
+    settings:
+      username:
+        from_secret: dockerhub_user
+      password:
+        from_secret: dockerhub_pass
+      repo: rubasace/ldrbot
+      tags:
+        - latest
+        - ${CI_BUILD_TARGET}
+    when:
+      event:
+        - promote
+
+  - name: tag-release
+    image: docker:git
+    environment:
+      GITHUB_TOKEN:
+        from_secret: github_token
+    commands:
+      - git config user.name "CI Bot"
+      - git config user.email "ci@example.com"
+      - git remote set-url origin https://$GITHUB_TOKEN@github.com/${DRONE_REPO}.git
+      - git add pom.xml
+      - git commit --allow-empty -m "Release ${CI_BUILD_TARGET}"
+      - git tag ${CI_BUILD_TARGET}
+      - git push origin ${CI_BUILD_TARGET}
+    when:
+      event:
+        - promote
+
+  - name: release-tag
+    image: plugins/github-release
+    settings:
+      api_key:
+        from_secret: github_token
+      files:
+        - target/*.jar
+      note: "Release for ${DRONE_TAG}"
+      tag: ${DRONE_TAG}
+    when:
+      event:
+        - tag
+volumes:
+  - name: m2-cache
+    host:
+      path: /var/lib/cache/.m2
+  - name: tesseract-dist
+    temp: { }
+trigger:
+  event:
+    - push
+    - promote
+    - tag
+hmac:
+---
+kind: signature
+hmac: 4f2a1fb8fb0a9e5c1c845097657e5c953ddf2eebf7f1dd25df8ef5886e9f5c41
+
+...
